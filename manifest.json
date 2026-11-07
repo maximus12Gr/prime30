@@ -1,6 +1,8 @@
 {
   "name": "Прайм 30",
   "short_name": "Прайм 30",
+  "description": "Подсчёт калорий по фото, зал, учёба и прогресс на 30 дней",
+  "id": "./",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
