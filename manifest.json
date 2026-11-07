@@ -1,13 +1,13 @@
 {
   "name": "Прайм 30",
   "short_name": "Прайм 30",
-  "description": "Подсчёт калорий по фото, зал, учёба и прогресс на 30 дней",
+  "description": "Похудение за 30 дней: калории по фото, вода, вес и прогресс",
   "id": "./",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#0e0f12",
-  "theme_color": "#0e0f12",
+  "background_color": "#0a0b09",
+  "theme_color": "#0a0b09",
   "lang": "ru",
   "icons": [
     { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
