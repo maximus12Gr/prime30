@@ -721,9 +721,9 @@ async function findFlashModel(){
   return names.includes('gemini-flash-latest') ? 'gemini-flash-latest'
     : names.sort((a,b)=>b.localeCompare(a,undefined,{numeric:true}))[0] || null;
 }
-async function gemini(parts, retries=1, fallback=true){
-  const model = (S.ai.model||'gemini-flash-latest').trim();
-  const ctl = new AbortController(), tm = setTimeout(()=>ctl.abort(), AI_TIMEOUT);
+async function gemini(parts, retries=1, fallback=true, opt={}){
+  const model = (opt.model || S.ai.model || 'gemini-flash-latest').trim();
+  const ctl = new AbortController(), tm = setTimeout(()=>ctl.abort(), opt.timeout || AI_TIMEOUT);
   let res;
   const gc = {temperature:0.2,responseMimeType:'application/json',responseSchema:SCHEMA};
   if(thinkingOk) gc.thinkingConfig = {thinkingLevel:'low'};
@@ -733,14 +733,14 @@ async function gemini(parts, retries=1, fallback=true){
       body: JSON.stringify({contents:[{role:'user',parts}], generationConfig:gc})
     });
   }catch(e){
-    throw new Error(e.name==='AbortError' ? `Модель ${model} не ответила за минуту. Попробуй ещё раз или выбери в Профиле модель gemini-3.5-flash-lite.` : 'Нет связи с Gemini. Проверь интернет.');
+    throw new Error(e.name==='AbortError' ? `Модель ${model} не ответила за ${Math.round((opt.timeout||AI_TIMEOUT)/1000)} сек. Нажми «Проверить» в Профиле: приложение подберёт быструю модель.` : 'Нет связи с Gemini. Проверь интернет.');
   }finally{ clearTimeout(tm); }
   const j = await res.json().catch(()=>({}));
   if(!res.ok){
     const m = j?.error?.message || res.statusText;
     // Модель не поддерживает уровень размышлений — повторяем без этой настройки.
-    if(res.status===400 && thinkingOk && /thinking/i.test(m)){ thinkingOk = false; return gemini(parts, retries, fallback); }
-    if((res.status===500 || res.status===503) && retries>0){ await sleep(1500); return gemini(parts, retries-1, fallback); }
+    if(res.status===400 && thinkingOk && /thinking/i.test(m)){ thinkingOk = false; return gemini(parts, retries, fallback, opt); }
+    if((res.status===500 || res.status===503) && retries>0){ await sleep(1500); return gemini(parts, retries-1, fallback, opt); }
     if(res.status===500 || res.status===503) throw new Error('Gemini сейчас перегружен. Попробуй через минуту.');
     if(res.status===429) throw new Error(`Лимит запросов модели ${model} исчерпан. Подожди минуту, а если не поможет — до завтра.`);
     if(/location is not supported/i.test(m)) throw new Error('Gemini API недоступен из этой страны или через этот VPN.');
@@ -1048,10 +1048,56 @@ async function testKey(){
   const st=$('#keyStatus'), b=$('#keyBtn');
   st.style.display='block'; st.style.color='';
   if(!S.ai.key){ st.textContent='Вставь ключ'; return; }
-  st.textContent='Проверяю…'; b.disabled=true;
-  try{ const r = await gemini([{text:'Оцени: 1 банан среднего размера.'}]); st.style.color='var(--lime)'; st.textContent=`Работает: банан ≈ ${r0(r.items?.[0]?.kcal)} ккал`; $('#sModel').value=S.ai.model; $('#modelNow').textContent=S.ai.model; }
-  catch(e){ st.style.color='var(--coral)'; st.textContent=e.message; }
-  b.disabled=false;
+  b.disabled=true;
+  try{ await diagnose(st); } finally { b.disabled=false; }
+}
+// Диагностика: 1) доходит ли телефон до Google; 2) какие Flash-модели отвечают и за сколько; самая быстрая сохраняется.
+async function diagnose(st){
+  const key = S.ai.key.trim(), sec = ms => (ms/1000).toLocaleString('ru-RU',{maximumFractionDigits:1});
+  st.textContent = 'Проверяю связь с Google…';
+  let names = [], ping;
+  const t0 = Date.now(), ctl = new AbortController(), tm = setTimeout(()=>ctl.abort(), 15000);
+  try{
+    const res = await fetch(`${API}?pageSize=200`, {headers:{'x-goog-api-key':key}, signal:ctl.signal});
+    const j = await res.json().catch(()=>({}));
+    if(!res.ok){
+      const m = j?.error?.message || res.statusText;
+      st.style.color='var(--coral)';
+      st.textContent = /location is not supported/i.test(m) ? 'Gemini API недоступен из этой страны или через этот VPN.'
+        : [400,401,403].includes(res.status) ? 'Ключ не подходит. Скопируй его из AI Studio заново.' : `Google ответил ошибкой: ${m}`;
+      return;
+    }
+    names = (j.models||[]).filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent')).map(m=>String(m.name).replace(/^models\//,''));
+    ping = Date.now()-t0;
+  }catch(e){
+    st.style.color='var(--coral)';
+    st.textContent = e.name==='AbortError' ? 'Телефон не достучался до Google за 15 сек. Проверь интернет или выключи VPN.' : 'Нет связи с Google. Проверь интернет или VPN.';
+    return;
+  }finally{ clearTimeout(tm); }
+  const byVer = (a,b) => b.localeCompare(a,undefined,{numeric:true});
+  const flash = names.filter(n=>/flash/.test(n) && !/image|live|tts|transcribe|omni|audio|embedding|robotics/.test(n)).sort(byVer);
+  const cands = [...new Set([S.ai.model, 'gemini-flash-latest', ...flash.filter(n=>/lite/.test(n)).slice(0,2), ...flash.filter(n=>!/lite|preview|exp|latest/.test(n)).slice(0,3)])]
+    .filter(n=>names.includes(n)).slice(0,6);
+  if(!cands.length){ st.style.color='var(--coral)'; st.textContent=`Связь есть (${sec(ping)} сек), но этому ключу не доступна ни одна Flash-модель.`; return; }
+  const rows = cands.map(m=>({m, state:'wait'}));
+  const draw = () => {
+    st.style.color='';
+    st.innerHTML = `<div>Связь с Google: ${sec(ping)} сек. Проверяю модели…</div>` + rows.map(r=>`<div class="kv" style="font-size:14px"><span>${esc(r.m)}</span><b style="color:${r.state==='ok'?'var(--lime)':r.state==='err'?'var(--coral)':'var(--muted)'};font-weight:600">${r.state==='ok'?sec(r.ms)+' сек':r.state==='err'?esc(r.err):'…'}</b></div>`).join('');
+  };
+  draw();
+  await Promise.all(rows.map(async r=>{
+    const t = Date.now();
+    try{ await gemini([{text:'Оцени: 1 банан среднего размера.'}], 0, false, {model:r.m, timeout:40000}); r.state='ok'; r.ms=Date.now()-t; }
+    catch(e){ r.state='err'; r.err = /не ответила/.test(e.message) ? 'нет ответа за 40 сек' : /Лимит/.test(e.message) ? 'лимит исчерпан' : e.message.slice(0,60); }
+    draw();
+  }));
+  const best = rows.filter(r=>r.state==='ok').sort((a,b)=>a.ms-b.ms)[0];
+  if(best){
+    S.ai.model = best.m; save(); $('#sModel').value = best.m; $('#modelNow').textContent = best.m;
+    st.insertAdjacentHTML('beforeend', `<p style="color:var(--lime);margin-top:10px;font-weight:600">Готово: выбрана самая быстрая модель ${esc(best.m)}</p>`);
+  } else {
+    st.insertAdjacentHTML('beforeend', `<p style="color:var(--coral);margin-top:10px">Ни одна модель не ответила. Пришли скрин этого списка.</p>`);
+  }
 }
 async function exportData(){
   const copy = structuredClone(S); copy.ai.key = '';

@@ -1,5 +1,5 @@
 // Офлайн-кэш оболочки приложения. Запросы к ИИ не кэшируются.
-const CACHE = 'prime30-v4';
+const CACHE = 'prime30-v5';
 const SHELL = ['./', 'index.html', 'manifest.json', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
