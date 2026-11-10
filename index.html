@@ -417,7 +417,7 @@ function toast(msg, action, ms=2600){
 const KEY = 'prime30.v1';
 const DEFAULT = {
   profile:{name:'',sex:'m',age:'',height:'',weight:'',goalW:'',act:'1.5',pace:'0.2',start:today()},
-  ai:{key:'',model:'gemini-flash-latest'},
+  ai:{key:'',model:'gemini-flash-latest',fallback:'gemini-flash-lite-latest'},
   days:{}, weights:[], measures:[]
 };
 let S;
@@ -765,10 +765,18 @@ async function runAI(imgParts, hint){
   est.loading = true; est.error = ''; renderEst();
   try{
     const parts = [{text: PROMPT + (hint ? `\nОписание от пользователя: ${hint}` : '')}, ...imgParts];
-    const r = await gemini(parts);
+    let r, light = false;
+    try { r = await gemini(parts, 1, true, {timeout:30000}); }
+    catch(e){
+      // Основная модель перегружена, молчит или упёрлась в лимит — тот же запрос уходит лёгкой модели.
+      const fb = S.ai.fallback;
+      if(req!==aiReq || !est || !fb || fb===S.ai.model || !/перегружен|не ответила|Лимит/.test(e.message)) throw e;
+      r = await gemini(parts, 1, false, {model:fb, timeout:40000}); light = true;
+    }
     if(req!==aiReq || !est) return;
     est.loading = false;
-    est.title = r.title || ''; est.conf = r.confidence||''; est.note = r.note||'';
+    est.title = r.title || ''; est.conf = r.confidence||'';
+    est.note = (light ? 'Основная модель перегружена, посчитала облегчённая: проверь граммы. ' : '') + (r.note||'');
     est.items = (Array.isArray(r.items) ? r.items : []).map(x=>{
       const g = +x.grams || 0, kcal = +x.kcal || 0, p = +x.protein || 0, f = +x.fat || 0, c = +x.carbs || 0;
       return {name:String(x.name??''), g:r0(g), kcal:r0(kcal), p:r1(p), f:r1(f), c:r1(c), open:false,
@@ -1088,13 +1096,17 @@ async function diagnose(st){
   await Promise.all(rows.map(async r=>{
     const t = Date.now();
     try{ await gemini([{text:'Оцени: 1 банан среднего размера.'}], 0, false, {model:r.m, timeout:40000}); r.state='ok'; r.ms=Date.now()-t; }
-    catch(e){ r.state='err'; r.err = /не ответила/.test(e.message) ? 'нет ответа за 40 сек' : /Лимит/.test(e.message) ? 'лимит исчерпан' : e.message.slice(0,60); }
+    catch(e){ r.state='err'; r.err = /не ответила/.test(e.message) ? 'нет ответа за 40 сек' : /Лимит/.test(e.message) ? 'лимит исчерпан' : /перегружен/.test(e.message) ? 'перегружена' : e.message.slice(0,60); }
     draw();
   }));
-  const best = rows.filter(r=>r.state==='ok').sort((a,b)=>a.ms-b.ms)[0];
-  if(best){
-    S.ai.model = best.m; save(); $('#sModel').value = best.m; $('#modelNow').textContent = best.m;
-    st.insertAdjacentHTML('beforeend', `<p style="color:var(--lime);margin-top:10px;font-weight:600">Готово: выбрана самая быстрая модель ${esc(best.m)}</p>`);
+  // Основной ставим полноценную Flash, если она ответила быстро (она точнее оценивает порции); лёгкую — запасной.
+  const okRows = rows.filter(r=>r.state==='ok').sort((a,b)=>a.ms-b.ms);
+  const full = okRows.find(r=>!/lite/.test(r.m) && r.ms<=15000), lite = okRows.find(r=>/lite/.test(r.m));
+  const main = full || okRows[0];
+  if(main){
+    S.ai.model = main.m; if(lite) S.ai.fallback = lite.m; save();
+    $('#sModel').value = main.m; $('#modelNow').textContent = main.m;
+    st.insertAdjacentHTML('beforeend', `<p style="color:var(--lime);margin-top:10px;font-weight:600">Готово. Основная модель: ${esc(main.m)}${lite && lite.m!==main.m ? `, запасная: ${esc(lite.m)}` : ''}</p>`);
   } else {
     st.insertAdjacentHTML('beforeend', `<p style="color:var(--coral);margin-top:10px">Ни одна модель не ответила. Пришли скрин этого списка.</p>`);
   }
