@@ -705,7 +705,9 @@ const SCHEMA = {type:'OBJECT',properties:{
     required:['name','grams','kcal','protein','fat','carbs']}}},
   required:['title','confidence','items','note']};
 const API = 'https://generativelanguage.googleapis.com/v1beta/models';
-const AI_TIMEOUT = 45000;
+const AI_TIMEOUT = 60000;
+// Новые Flash-модели по умолчанию долго «думают» перед ответом; для оценки еды хватает низкого уровня.
+let thinkingOk = true;
 const sleep = ms => new Promise(r=>setTimeout(r,ms));
 // Если выбранная модель исчезла, ищем актуальную обычную Flash-модель в списке, доступном этому ключу.
 async function findFlashModel(){
@@ -723,17 +725,21 @@ async function gemini(parts, retries=1, fallback=true){
   const model = (S.ai.model||'gemini-flash-latest').trim();
   const ctl = new AbortController(), tm = setTimeout(()=>ctl.abort(), AI_TIMEOUT);
   let res;
+  const gc = {temperature:0.2,responseMimeType:'application/json',responseSchema:SCHEMA};
+  if(thinkingOk) gc.thinkingConfig = {thinkingLevel:'low'};
   try{
     res = await fetch(`${API}/${encodeURIComponent(model)}:generateContent`,{
       method:'POST', signal:ctl.signal, headers:{'Content-Type':'application/json','x-goog-api-key':S.ai.key.trim()},
-      body: JSON.stringify({contents:[{role:'user',parts}], generationConfig:{temperature:0.2,responseMimeType:'application/json',responseSchema:SCHEMA}})
+      body: JSON.stringify({contents:[{role:'user',parts}], generationConfig:gc})
     });
   }catch(e){
-    throw new Error(e.name==='AbortError' ? 'ИИ не ответил за 45 секунд. Попробуй ещё раз.' : 'Нет связи с Gemini. Проверь интернет.');
+    throw new Error(e.name==='AbortError' ? `Модель ${model} не ответила за минуту. Попробуй ещё раз или выбери в Профиле модель gemini-3.5-flash-lite.` : 'Нет связи с Gemini. Проверь интернет.');
   }finally{ clearTimeout(tm); }
   const j = await res.json().catch(()=>({}));
   if(!res.ok){
     const m = j?.error?.message || res.statusText;
+    // Модель не поддерживает уровень размышлений — повторяем без этой настройки.
+    if(res.status===400 && thinkingOk && /thinking/i.test(m)){ thinkingOk = false; return gemini(parts, retries, fallback); }
     if((res.status===500 || res.status===503) && retries>0){ await sleep(1500); return gemini(parts, retries-1, fallback); }
     if(res.status===500 || res.status===503) throw new Error('Gemini сейчас перегружен. Попробуй через минуту.');
     if(res.status===429) throw new Error(`Лимит запросов модели ${model} исчерпан. Подожди минуту, а если не поможет — до завтра.`);
@@ -783,7 +789,9 @@ function renderEst(){
   const body = $('#estBody'), foot = $('#estFoot');
   const shot = (est.img || (est.editId && est.thumb)) ? `<div class="shot ${est.loading?'scan':''}" ${est.editId?'style="height:120px"':''}><img src="${esc(est.img||est.thumb)}" alt=""></div>` : '';
   if(est.loading){
-    body.innerHTML = `${shot}<div class="loading">${shot?'':'<div class="spin"></div>'}<h3>Считаю калории…</h3><p class="muted small">Обычно несколько секунд</p></div>`;
+    body.innerHTML = `${shot}<div class="loading">${shot?'':'<div class="spin"></div>'}<h3>Считаю калории…</h3><p class="muted small num" id="aiWait">Обычно несколько секунд</p></div>`;
+    const t0 = Date.now(), tick = () => { const el=$('#aiWait'); if(!el || !est?.loading) return; const s=Math.round((Date.now()-t0)/1000); if(s>=8) el.textContent=`Уже ${s} сек, модель думает…`; setTimeout(tick,1000); };
+    setTimeout(tick,1000);
     foot.style.display='flex'; foot.innerHTML = `<button class="btn" onclick="closeSheet()">Отмена</button>`;
     return;
   }
